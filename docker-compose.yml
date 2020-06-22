@@ -1,0 +1,15 @@
+version: '3'
+services:
+  notebook:
+    build: .
+    image: katsu-m5
+    container_name: katsu-m5-conda
+    tty: true
+    volumes: 
+      - ./:/analysis
+      - ${INPUT_DIR}:/analysis/input
+      - ${OUTPUT_DIR}:/analysis/output
+    env_file: .env
+    ports:
+      - 8888:8888
+    command: jupyter notebook --ip=0.0.0.0 --allow-root --no-browser
