@@ -1,8 +1,0 @@
-numpy==1.18.5
-pandas==1.0.4
-pystan==2.19.1.1
-fbprophet==0.6
-lightgbm==2.3.1
-catboost==0.23
-tensorflow==2.1.0
-tensorflow-addons==0.9.1
