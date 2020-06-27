@@ -188,11 +188,15 @@ def make_submission(df_prophet_forecast_3):
 # make a submit file
 df_prophet_forecast = dept_store_sub_format(predictions)
 df_sub = make_submission(df_prophet_forecast)
-if MODE == 'sub':    
-    df_sub.to_csv(OUTPUT_DIR + f'submission_{MODEL}.csv')
-    print('Submission file saved!')
 
-else:
+df_sub.to_csv(OUTPUT_DIR + f'submission_{MODEL}.csv', index=False)
+print('Submission file saved!')
+
+print(df_sub.shape)
+df_sub.head()
+
+# compute score
+if MODE != 'sub':
     ## evaluation metric
     ## from https://www.kaggle.com/c/m5-forecasting-accuracy/discussion/133834 and edited to get scores at all levels
     class WRMSSEEvaluator(object):

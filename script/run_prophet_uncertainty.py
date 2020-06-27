@@ -194,22 +194,22 @@ for idx, q in enumerate(qs):
 def get_group_preds(unc_dfs, level):
     df = pd.DataFrame()
     for q in qs:
-        tmp = unc_dfs[q].groupby(level)[cols].sum()
-        df = pd.concat([df, tmp], ignore_index=True)
-    q = np.repeat(qs, len(df))
+        tmp = unc_dfs[q].groupby(level)[cols].agg('sum').reset_index()
+        df = pd.concat([df, tmp])
+    q = np.repeat(qs, len(tmp))
     if level != "id":
         df["id"] = [f"{lev}_X_{q:.3f}_validation" for lev, q in zip(df[level].values, q)]
     else:
-        df["id"] = [f"{lev.replace('_validation', '')}_{q:.3f}_validation" for lev, q in zip(df[level].values, q)]
+        df["id"] = [f"{lev.replace('_evaluation', '')}_{q:.3f}_validation" for lev, q in zip(df[level].values, q)]
     df = df[["id"]+list(cols)]
     return df
 
 def get_couple_group_preds(unc_dfs, level1, level2):
     df = pd.DataFrame()
     for q in qs:
-        tmp = unc_dfs[q].groupby([level1, level2])[cols].sum()
-        df = pd.concat([df, tmp], ignore_index=True)
-    q = np.repeat(qs, len(df))
+        tmp = unc_dfs[q].groupby([level1, level2])[cols].agg('sum').reset_index()
+        df = pd.concat([df, tmp])
+    q = np.repeat(qs, len(tmp))
     df["id"] = [f"{lev1}_{lev2}_{q:.3f}_validation" for lev1,lev2, q in 
                 zip(df[level1].values,df[level2].values, q)]
     df = df[["id"]+list(cols)]
@@ -230,7 +230,10 @@ def make_submission(sub, level, couples):
     return df
 
 # make a submit file
-df_sub = make_submission(unc_dfs, level, couples)
+df_sub = make_submission(unc_dfs, levels, couples)
  
-df_sub.to_csv(OUTPUT_DIR + f'submission_{MODEL}.csv')
+df_sub.to_csv(OUTPUT_DIR + f'submission_{MODEL}.csv', index=False)
 print('Submission file saved!')
+
+print(df_sub.shape)
+df_sub.head()
