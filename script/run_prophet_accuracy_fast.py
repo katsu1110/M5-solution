@@ -51,6 +51,9 @@ def load_data():
     df_price = pd.read_csv(INPUT_DIR + 'sell_prices.csv')
     df_sale = pd.read_csv(INPUT_DIR + 'sales_train_evaluation.csv')
     df_sample = pd.read_csv(INPUT_DIR + 'sample_submission.csv')
+
+    # evaluation -> validation
+    df_sale['id'] = df_sale['id'].str.replace("evaluation", "validation")
     return df_sale, df_calendar, df_price, df_sample
 df_sale, df_calendar, df_price, df_sample = load_data()
     
@@ -96,43 +99,34 @@ def CreateTimeSeries(dept_id, store_id):
     dates = dates.iloc[start_idx:end_idx].reset_index(drop=True)
     return dates
 
+
 def run_prophet(dept_id, store_id):
     # create timeseries for fbprophet
     ts = CreateTimeSeries(dept_id, store_id)
 
     # define models
-    model_add_wo = Prophet(seasonality_mode='additive')
-    model_mul_wo = Prophet(seasonality_mode='multiplicative')
-    model_add_w = Prophet(holidays=holidays, seasonality_mode='additive')
-    model_mul_w = Prophet(holidays=holidays, seasonality_mode='multiplicative')
+    # (https://towardsdatascience.com/implementing-facebook-prophet-efficiently-c241305405a3)
+    model= Prophet(holidays=holidays, seasonality_mode='multiplicative', 
+                   daily_seasonality=False, weekly_seasonality=False, yearly_seasonality=False,
+                   ).add_seasonality(
+                       name='monthly', period=30.5, fourier_order=12
+                   ).add_seasonality(
+                       name='daily', period=1, fourier_order=15
+                   ).add_seasonality(
+                       name='weekly', period=7, fourier_order=20
+                   ).add_seasonality(
+                       name='yearly', period=365.25, fourier_order=20
+                   ).add_seasonality(
+                       name='quarterly', period=365.25/4, fourier_order=5, prior_scale=8
+                   ).add_country_holidays(country_name='US')
         
-    # country holidays
-    model_add_wo.add_country_holidays(country_name='US')
-    model_mul_wo.add_country_holidays(country_name='US')
-    model_add_w.add_country_holidays(country_name='US')
-    model_mul_w.add_country_holidays(country_name='US')
-    
     # fit
-    model_add_wo.fit(ts)
-    model_mul_wo.fit(ts)
-    model_add_w.fit(ts)
-    model_mul_w.fit(ts)
+    model.fit(ts)
 
     # predict
-    forecast_add_wo = model_add_wo.make_future_dataframe(periods=28, include_history=False)
-    forecast_mul_wo = model_mul_wo.make_future_dataframe(periods=28, include_history=False)
-    forecast_add_w = model_add_w.make_future_dataframe(periods=28, include_history=False)
-    forecast_mul_w = model_mul_w.make_future_dataframe(periods=28, include_history=False)
-    
-    forecast_add_wo = model_add_wo.predict(forecast_add_wo)
-    forecast_mul_wo = model_mul_wo.predict(forecast_mul_wo)
-    forecast_add_w = model_add_w.predict(forecast_add_w)
-    forecast_mul_w = model_mul_w.predict(forecast_mul_w)
-
-    # ensemble
-    pred = 0.25 * forecast_add_wo['yhat'].values.transpose() + 0.25 * forecast_mul_wo['yhat'].values.transpose() + \
-        0.25 * forecast_add_w['yhat'].values.transpose() + 0.25 * forecast_mul_w['yhat'].values.transpose()
-    return np.append(np.array([dept_id,store_id]), pred)
+    forecast = model.make_future_dataframe(periods=28, include_history=False)
+    forecast = model.predict(forecast)
+    return np.append(np.array([dept_id,store_id]), forecast['yhat'].values.transpose())
 
 ###
 # run
@@ -179,10 +173,6 @@ def make_submission(df_prophet_forecast_3):
     # Fix negative forecast
     num = df_sub._get_numeric_data()
     num[num < 0] = 0
-
-    df_sub.to_csv('submission.csv', index=False)
-
-    print(f'Submission shape: {df_sub.shape}')
     return df_sub
 
 # make a submit file

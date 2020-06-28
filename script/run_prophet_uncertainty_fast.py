@@ -51,6 +51,9 @@ def load_data():
     df_price = pd.read_csv(INPUT_DIR + 'sell_prices.csv')
     df_sale = pd.read_csv(INPUT_DIR + 'sales_train_evaluation.csv')
     df_sample = pd.read_csv(INPUT_DIR + 'sample_submission.csv')
+
+    # evaluation -> validation
+    df_sale['id'] = df_sale['id'].str.replace("evaluation", "validation")
     return df_sale, df_calendar, df_price, df_sample
 df_sale, df_calendar, df_price, df_sample = load_data()
     
@@ -60,7 +63,7 @@ df_sale, df_calendar, df_price, df_sample = load_data()
 def format_holidays(df_sale):
     columns = df_sale.columns
     date_columns = columns[columns.str.contains("d_")]
-    dates_s = [pd.to_datetime(df_calendar.loc[df_calendar['d'] == str_date,'date'].values[0]) for str_date in date_columns]
+    dates_s = [pd.to_datetime(df_calendar.loc[df_calendar['d'] == str_date, 'date'].values[0]) for str_date in date_columns]
 
     tmp = df_sale[date_columns].sum()
     ignore_date = df_calendar[df_calendar['d'].isin(tmp[tmp < 10000].index.values)]['date'].values
@@ -97,52 +100,43 @@ def CreateTimeSeries(dept_id, store_id):
     return dates
 
 def run_prophet(dept_id, store_id):
-    # quantiles
-    qs = [0.750, 0.835, 0.975, 0.995]
-    pred = np.zeros((28, 9))
-
     # create timeseries for fbprophet
     ts = CreateTimeSeries(dept_id, store_id)
 
+    qs = [0.750, 0.835, 0.975, 0.995]
+    pred = np.zeros((28, 9))
+
+    # define models
+    # (https://towardsdatascience.com/implementing-facebook-prophet-efficiently-c241305405a3)
     for i, q in enumerate(qs):
         # define models
-        model_add_wo = Prophet(seasonality_mode='additive', interval_width=q)
-        model_mul_wo = Prophet(seasonality_mode='multiplicative', interval_width=q)
-        model_add_w = Prophet(holidays=holidays, seasonality_mode='additive', interval_width=q)
-        model_mul_w = Prophet(holidays=holidays, seasonality_mode='multiplicative', interval_width=q)
-            
-        # country holidays
-        model_add_wo.add_country_holidays(country_name='US')
-        model_mul_wo.add_country_holidays(country_name='US')
-        model_add_w.add_country_holidays(country_name='US')
-        model_mul_w.add_country_holidays(country_name='US')
+        model = Prophet(holidays=holidays, seasonality_mode='multiplicative', interval_width=q,
+                    daily_seasonality=False, weekly_seasonality=False, yearly_seasonality=False,
+                    ).add_seasonality(
+                        name='monthly', period=30.5, fourier_order=12
+                    ).add_seasonality(
+                        name='daily', period=1, fourier_order=15
+                    ).add_seasonality(
+                        name='weekly', period=7, fourier_order=20
+                    ).add_seasonality(
+                        name='yearly', period=365.25, fourier_order=20
+                    ).add_seasonality(
+                        name='quarterly', period=365.25/4, fourier_order=5, prior_scale=8
+                    ).add_country_holidays(country_name='US')
         
         # fit
-        model_add_wo.fit(ts)
-        model_mul_wo.fit(ts)
-        model_add_w.fit(ts)
-        model_mul_w.fit(ts)
+        model.fit(ts)
 
         # predict
-        forecast_add_wo = model_add_wo.make_future_dataframe(periods=28, include_history=False)
-        forecast_mul_wo = model_mul_wo.make_future_dataframe(periods=28, include_history=False)
-        forecast_add_w = model_add_w.make_future_dataframe(periods=28, include_history=False)
-        forecast_mul_w = model_mul_w.make_future_dataframe(periods=28, include_history=False)
-        
-        forecast_add_wo = model_add_wo.predict(forecast_add_wo)
-        forecast_mul_wo = model_mul_wo.predict(forecast_mul_wo)
-        forecast_add_w = model_add_w.predict(forecast_add_w)
-        forecast_mul_w = model_mul_w.predict(forecast_mul_w)
+        forecast = model.make_future_dataframe(periods=28, include_history=False)
+        forecast = model.predict(forecast)
 
         # ensemble
-        pred[:, i] = 0.25 * forecast_add_wo['yhat_lower'].values.transpose() + 0.25 * forecast_mul_wo['yhat_lower'].values.transpose() + \
-            0.25 * forecast_add_w['yhat_lower'].values.transpose() + 0.25 * forecast_mul_w['yhat_lower'].values.transpose()
-        pred[:, -i-1] = 0.25 * forecast_add_wo['yhat_upper'].values.transpose() + 0.25 * forecast_mul_wo['yhat_upper'].values.transpose() + \
-            0.25 * forecast_add_w['yhat_upper'].values.transpose() + 0.25 * forecast_mul_w['yhat_upper'].values.transpose()
-        pred[:, 4] += 0.25 * forecast_add_wo['yhat'].values.transpose() + 0.25 * forecast_mul_wo['yhat'].values.transpose() + \
-            0.25 * forecast_add_w['yhat'].values.transpose() + 0.25 * forecast_mul_w['yhat'].values.transpose()
-    pred[:, 4] /= 4
-    return np.append(np.array([dept_id,store_id]), pred)
+        pred[:, i] = forecast['yhat_lower'].values.transpose()
+        pred[:, -i-1] = forecast['yhat_upper'].values.transpose()
+        pred[:, 4] += forecast['yhat'].values.transpose() / len(qs)
+    return np.append(np.array([dept_id,store_id]), pred.ravel())
+
 
 ###
 # run
@@ -167,8 +161,6 @@ levels = ["id", "item_id", "dept_id", "cat_id", "store_id", "state_id", "_all_"]
 couples = [("state_id", "item_id"),  ("state_id", "dept_id"),("store_id","dept_id"),
                             ("state_id", "cat_id"),("store_id","cat_id")]
 cols = [f"F{i}" for i in range(1, 29)]
-VALID = []
-EVAL = []
 def dept_store_sub_format(predictions3, idx):
     df_prophet_forecast_3 = pd.DataFrame()
     for k in range(0, len(predictions3)):
@@ -177,8 +169,9 @@ def dept_store_sub_format(predictions3, idx):
 
         df_item = df_sale.loc[(df_sale.dept_id == dept_id) & (df_sale.store_id == store_id)][['id']]
         df_item['val'] = df_sale[(df_sale.dept_id == dept_id) & (df_sale.store_id == store_id)].iloc[:, np.r_[0,-28:0]].sum(axis = 1)
+        pred = predictions3[k][2:].reshape(28, 9)
         for i in range(1,29):
-            df_item[f'F{i}'] = (df_item['val'] * float(predictions3[k][i+1, idx]) / df_item['val'].sum())
+            df_item[f'F{i}'] = (df_item['val'] * float(pred[i-1, idx]) / df_item['val'].sum())
         df_prophet_forecast_3 = pd.concat([df_prophet_forecast_3, df_item])
 
     df_prophet_forecast_3 = df_prophet_forecast_3.drop('val', axis=1)
@@ -200,7 +193,7 @@ def get_group_preds(unc_dfs, level):
     if level != "id":
         df["id"] = [f"{lev}_X_{q:.3f}_validation" for lev, q in zip(df[level].values, q)]
     else:
-        df["id"] = [f"{lev.replace('_evaluation', '')}_{q:.3f}_validation" for lev, q in zip(df[level].values, q)]
+        df["id"] = [f"{lev.replace('_validation', '')}_{q:.3f}_validation" for lev, q in zip(df[level].values, q)]
     df = df[["id"]+list(cols)]
     return df
 
