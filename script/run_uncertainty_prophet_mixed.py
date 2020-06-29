@@ -30,10 +30,9 @@ warnings.filterwarnings('ignore')
 ###
 INPUT_DIR = '../input/m5-forecasting-uncertainty/'
 OUTPUT_DIR = ''
-DETREND = True
 MODEL = 'prophet'
-MODE = 'lb'
-START_DATE = '2013-04-02'
+MODE = 'sub'
+START_DATE = '2013-04-02' # 3 years
 
 if MODE == 'cv':
     END_DATE = '2016-03-28'
@@ -116,20 +115,19 @@ def run_prophet_ind(id):
     # define models
     for i, q in enumerate(qs):
         # (https://towardsdatascience.com/implementing-facebook-prophet-efficiently-c241305405a3)
-    #     model= Prophet(holidays=holidays, seasonality_mode='multiplicative', 
-    #                    daily_seasonality=False, weekly_seasonality=False, yearly_seasonality=False,
-    #                    ).add_seasonality(
-    #                        name='monthly', period=30.5, fourier_order=12
-    #                    ).add_seasonality(
-    #                        name='daily', period=1, fourier_order=15
-    #                    ).add_seasonality(
-    #                        name='weekly', period=7, fourier_order=20
-    #                    ).add_seasonality(
-    #                        name='yearly', period=365.25, fourier_order=20
-    #                    ).add_seasonality(
-    #                        name='quarterly', period=365.25/4, fourier_order=5, prior_scale=8
-    #                    ).add_country_holidays(country_name='US')
-        model = Prophet(interval_width=q).add_country_holidays(country_name='US')
+        model = Prophet(holidays=holidays, seasonality_mode='additive', interval_width=q,
+                    daily_seasonality=False, weekly_seasonality=False, yearly_seasonality=False,
+                    ).add_seasonality(
+                        name='monthly', period=30.5, fourier_order=12
+                    ).add_seasonality(
+                        name='daily', period=1, fourier_order=14
+                    ).add_seasonality(
+                        name='weekly', period=7, fourier_order=20
+                    ).add_seasonality(
+                        name='yearly', period=365.25, fourier_order=20
+                    ).add_seasonality(
+                        name='quarterly', period=365.25/4, fourier_order=5
+                    )
             
         # fit
         model.fit(ts)
@@ -183,8 +181,19 @@ def run_prophet(dept_id, store_id):
     # define models
     for i, q in enumerate(qs):
         # (https://towardsdatascience.com/implementing-facebook-prophet-efficiently-c241305405a3)
-        model= Prophet(holidays=holidays, seasonality_mode='additive', holidays_prior_scale=0.1
-                    ).add_country_holidays(country_name='US')
+        model = Prophet(holidays=holidays, seasonality_mode='multiplicative', interval_width=q,
+                    daily_seasonality=False, weekly_seasonality=False, yearly_seasonality=False,
+                    ).add_seasonality(
+                        name='monthly', period=30.5, fourier_order=12
+                    ).add_seasonality(
+                        name='daily', period=1, fourier_order=14
+                    ).add_seasonality(
+                        name='weekly', period=7, fourier_order=20
+                    ).add_seasonality(
+                        name='yearly', period=365.25, fourier_order=20
+                    ).add_seasonality(
+                        name='quarterly', period=365.25/4, fourier_order=5
+                    )
             
         # fit
         model.fit(ts)
