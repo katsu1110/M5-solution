@@ -30,7 +30,7 @@ class TS_Models(object):
         self.model = model
         self.pred_points = pred_points
         self.estimate = estimate
-        self.quantiles = [0.005, 0.025, 0.165, 0.250, 0.500]
+        self.quantiles = [0.005, 0.025, 0.165, 0.250]
         self.prediction = self.run()
 
     def run_accuracy(self):
@@ -54,7 +54,7 @@ class TS_Models(object):
         elif self.model == 'Theta':
             tss = self.timeseries.copy()
             tss.index = tss['ds']
-            fitted = ThetaModel(tss.y, method="additive").fit(use_mle=True)
+            fitted = ThetaModel(tss.y).fit(use_mle=True)
             pred = fitted.forecast(self.pred_points)
 
         elif self.model == 'SARIMAX':
@@ -98,11 +98,12 @@ class TS_Models(object):
             fitted = VARMAX(self.timeseries['y'].values, order=(2, 1, 2), trend='c').fit()
 
         # uncertainty estimate
-        uncertainties = np.zeros((self.pred_points, len(self.quantiles)))
+        uncertainties = np.zeros((self.pred_points, 2 * len(self.quantiles) + 1))
         for i, q in enumerate(self.quantiles):
             fcast = fitted.get_forecast(steps=self.pred_points).summary_frame(alpha=q)
             uncertainties[:, i] = fcast['mean_ci_lower']
             uncertainties[:, -i-1] = fcast['mean_ci_upper']
+            uncertainties[:, 4] += fcast['mean'] / len(self.quantiles)
 
         return uncertainties
 
