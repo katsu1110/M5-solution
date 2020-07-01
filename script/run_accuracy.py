@@ -1,3 +1,16 @@
+"""
+
+run statistical forecasting models for the M5 accuracy competition
+
+:INPUT:
+- MODEL : 'ARIMA', 'SktimeEnsemble', or 'Prophet'
+- MODE : 'sub', 'lb', or 'cv' (for 'lb' and 'cv', scores are computed)
+
+:EXAMPLE:
+>>> python run_accuracy.py 'SktimeEnsemble' 'sub'
+
+"""
+
 ### 
 # libraries
 ###
@@ -7,33 +20,37 @@ import os, sys, gc
 import random
 import math
 from typing import List, NoReturn, Union, Tuple, Optional, Text, Generic, Callable, Dict
-from tqdm import tqdm
-
 from multiprocessing import Pool, cpu_count
+
+# prophet
 from fbprophet import Prophet
-from sklearn.linear_model import LinearRegression
 
-# visualize
-import matplotlib.pyplot as plt
-import matplotlib.style as style
-import seaborn as sns
-from matplotlib import pyplot
-from matplotlib.ticker import ScalarFormatter
-sns.set_context("talk")
-style.use('seaborn-colorblind')
+# sktime
+from sktime.forecasting.theta import ThetaForecaster
+from sktime.forecasting.naive import NaiveForecaster
+from sktime.forecasting.exp_smoothing import ExponentialSmoothing
+from sktime.forecasting.arima import AutoARIMA
+from sktime.forecasting.compose import EnsembleForecaster
+from sktime.forecasting.model_selection import temporal_train_test_split
+from sktime.forecasting.compose import ReducedRegressionForecaster
+from sktime.performance_metrics.forecasting import smape_loss
+from sktime.utils.plotting.forecasting import plot_ys
+from sktime.forecasting.trend import PolynomialTrendForecaster
+from sktime.transformers.single_series.detrend import Detrender
+from sktime.forecasting.compose import TransformedTargetForecaster
+from sktime.transformers.single_series.detrend import Deseasonalizer
 
-import warnings
-warnings.filterwarnings('ignore')
+# statsmodels
+from statsmodels.tsa.api import SARIMAX
 
 ###
 # config
 ###
-INPUT_DIR = '../input/m5-forecasting-accuracy/'
-OUTPUT_DIR = ''
-DETREND = True
-MODEL = 'prophet'
-MODE = 'sub'
-START_DATE = '2015-04-02'
+INPUT_DIR = '../input/'
+OUTPUT_DIR = '../output/'
+MODEL = sys.argv[1] # choose either 'ARIMA', 'SktimeEnsemble', or 'Prophet'
+MODE = sys.argv[2] # choose either 'sub', 'lb', or 'cv'
+START_DATE = '2013-04-02' # 3 years (seems best)
 
 if MODE == 'cv':
     END_DATE = '2016-03-28'
@@ -85,9 +102,118 @@ holidays, oh_holidays, date_columns, dates_s, ignore_date = format_holidays(df_s
 # Time series 
 ###
 
+###
+# run
+###
+
+# ids with high-variance in which prophet predicts individually
+id_individuals = df_sale.loc[np.var(df_sale.values[:, -128:], axis=1) > 400, 'id'].values.tolist() 
+# id_indviduals = ['FOODS_3_090_WI_3_validation','FOODS_3_785_CA_1_validation', 'FOODS_3_362_CA_3_validation']
+def CreateTimeSeries_ind(id):
+    item_series = df_sale[df_sale['id'] == id]
+    columns = df_sale.columns
+    date_columns = columns[columns.str.contains("d_")]
+    dates_s = [pd.to_datetime(df_calendar.loc[df_calendar['d'] == str_date,'date'].values[0]) for str_date in date_columns]
+    dates = pd.DataFrame({'ds': dates_s}, index=range(len(dates_s)))
+    dates['y'] = item_series[date_columns].values.transpose()
+    # Remove chirstmas date
+    #dates = dates[~dates['ds'].isin(ignore_date)]
+    # Remove zero day
+    #dates = dates[dates['y'] > 0]        
+    start_idx = np.where(dates['ds'] == START_DATE)[0][0]
+    end_idx = np.where(dates['ds'] == END_DATE)[0][0]
+    dates = dates.iloc[start_idx:end_idx].reset_index(drop=True)
+    return dates
+
+def run_prophet_ind(id):
+    # create timeseries for fbprophet
+    ts = CreateTimeSeries_ind(id)
+
+    # define models
+    # (https://towardsdatascience.com/implementing-facebook-prophet-efficiently-c241305405a3)
+    model = Prophet(holidays=holidays, seasonality_mode='additive', 
+                daily_seasonality=False, weekly_seasonality=False, yearly_seasonality=False,
+                ).add_seasonality(
+                    name='monthly', period=28, fourier_order=12
+                ).add_seasonality(
+                    name='daily', period=1, fourier_order=14
+                ).add_seasonality(
+                    name='weekly', period=7, fourier_order=20
+                ).add_seasonality(
+                    name='yearly', period=365.25, fourier_order=20
+                ).add_seasonality(
+                    name='quarterly', period=365.25/4, fourier_order=5
+                )
+        
+    # fit
+    model.fit(ts)
+
+    # predict
+    forecast = model.make_future_dataframe(periods=28, include_history=False)
+    forecast = model.predict(forecast)
+    return np.append(np.array([id]), forecast['yhat'].values.transpose())
+
+def run_arima_ind(id):
+    # create timeseries for fbprophet
+    ts = CreateTimeSeries_ind(id)
+
+    # ARIMA
+    fitted1 = SARIMAX(ts['y'].values+1, order=(3, 1, 5), trend='c').fit()
+    fitted2 = SARIMAX(ts['y'].values+1, order=(2, 1, 2), trend='c').fit()
+    y_pred = 0.5 * fitted1.forecast(28) + 0.5 * fitted2.forecast(28)
+    return np.append(np.array([id]), y_pred-1)
+
+def run_sktimes_ind(id):
+    # create timeseries for fbprophet
+    ts = CreateTimeSeries_ind(id)
+
+    # sktime ensembler
+    forecaster = EnsembleForecaster([
+            ('naive_ses', NaiveForecaster(sp=28, strategy="seasonal_last")),
+            ('naive', NaiveForecaster(strategy="last")),
+            ('theta_ses', ThetaForecaster(sp=28)),
+            ('theta', ThetaForecaster()),
+            ("exp_ses", ExponentialSmoothing(seasonal="additive", sp=28)),
+            ("exp_damped", ExponentialSmoothing(trend='additive', damped=True, seasonal="additive", sp=28))
+        ])
+    forecaster.fit(ts.y+1)
+    y_pred = forecaster.predict(np.arange(1, 29))
+    return np.append(np.array([id]), y_pred-1)
+
+###
+# run individually
+###
+
+# run
+print("Total IDs: {}".format(len(id_individuals)))
+print(f'Parallelism on {cpu_count()} CPU')
+if MODEL == 'Prophet':
+    with Pool(cpu_count()) as p:
+        predictions_ind = list(p.map(run_prophet_ind, id_individuals))
+elif MODEL == 'ARIMA':
+    with Pool(cpu_count()) as p:
+        predictions_ind = list(p.map(run_arima_ind, id_individuals))
+elif MODEL == 'SktimeEnsemble':
+    with Pool(cpu_count()) as p:
+        predictions_ind = list(p.map(run_sktimes_ind, id_individuals))
+
+# to pd.DataFrame
+df_prophet_forecast_1 = pd.DataFrame(predictions_ind)
+df_prophet_forecast_1.columns = df_sample.columns
+print(df_prophet_forecast_1.shape)
+
+###
+# run on dept_id, store_id basis
+###
+
 # only dept_id, store_id based
 df_sale_group_item = df_sale[np.hstack([['dept_id','store_id'],date_columns])].groupby(['dept_id','store_id']).sum()
 df_sale_group_item = df_sale_group_item.reset_index()
+
+# create list param
+ids = []
+for i in range(0,df_sale_group_item.shape[0]):
+    ids = ids + [(df_sale_group_item[i:i+1]['dept_id'].values[0],df_sale_group_item[i:i+1]['store_id'].values[0])]
 
 def CreateTimeSeries(dept_id, store_id):
     item_series =  df_sale_group_item[(df_sale_group_item.dept_id == dept_id) & (df_sale_group_item.store_id == store_id)]
@@ -106,19 +232,19 @@ def run_prophet(dept_id, store_id):
 
     # define models
     # (https://towardsdatascience.com/implementing-facebook-prophet-efficiently-c241305405a3)
-    model= Prophet(holidays=holidays, seasonality_mode='multiplicative', 
-                   daily_seasonality=False, weekly_seasonality=False, yearly_seasonality=False,
-                   ).add_seasonality(
-                       name='monthly', period=30.5, fourier_order=12
-                   ).add_seasonality(
-                       name='daily', period=1, fourier_order=15
-                   ).add_seasonality(
-                       name='weekly', period=7, fourier_order=20
-                   ).add_seasonality(
-                       name='yearly', period=365.25, fourier_order=20
-                   ).add_seasonality(
-                       name='quarterly', period=365.25/4, fourier_order=5, prior_scale=8
-                   ).add_country_holidays(country_name='US')
+    model = Prophet(holidays=holidays, seasonality_mode='additive', 
+                daily_seasonality=False, weekly_seasonality=False, yearly_seasonality=False,
+                ).add_seasonality(
+                    name='monthly', period=28, fourier_order=12
+                ).add_seasonality(
+                    name='daily', period=1, fourier_order=14
+                ).add_seasonality(
+                    name='weekly', period=7, fourier_order=20
+                ).add_seasonality(
+                    name='yearly', period=365.25, fourier_order=20
+                ).add_seasonality(
+                    name='quarterly', period=365.25/4, fourier_order=5
+                )
         
     # fit
     model.fit(ts)
@@ -128,24 +254,50 @@ def run_prophet(dept_id, store_id):
     forecast = model.predict(forecast)
     return np.append(np.array([dept_id,store_id]), forecast['yhat'].values.transpose())
 
-###
-# run
-###
+def run_arima(dept_id, store_id):
+    # create timeseries for fbprophet
+    ts = CreateTimeSeries(dept_id, store_id)
+    
+    # ARIMA
+    fitted1 = SARIMAX(ts['y'].values+1, order=(3, 1, 5), trend='c').fit()
+    fitted2 = SARIMAX(ts['y'].values+1, order=(2, 1, 2), trend='c').fit()
+    y_pred = 0.5 * fitted1.forecast(28) + 0.5 * fitted2.forecast(28)
+    return np.append(np.array([dept_id, store_id]), y_pred-1)
 
-# create list param
-ids = []
-for i in range(0,df_sale_group_item.shape[0]):
-    ids = ids + [(df_sale_group_item[i:i+1]['dept_id'].values[0],df_sale_group_item[i:i+1]['store_id'].values[0])]
+def run_sktimes(dept_id, store_id):
+    # create timeseries for fbprophet
+    ts = CreateTimeSeries(dept_id, store_id)
+
+    # sktime ensembler
+    forecaster = EnsembleForecaster([
+            ('naive_ses', NaiveForecaster(sp=28, strategy="seasonal_last")),
+            ('naive', NaiveForecaster(strategy="last")),
+            ('theta_ses', ThetaForecaster(sp=28)),
+            ('theta', ThetaForecaster()),
+            ("exp_ses", ExponentialSmoothing(seasonal="additive", sp=28)),
+            ("exp_damped", ExponentialSmoothing(trend='additive', damped=True, seasonal="additive", sp=28))
+        ])
+    forecaster.fit(ts.y+1)
+    y_pred = forecaster.predict(np.arange(1, 29))
+    return np.append(np.array([dept_id, store_id]), y_pred-1)
 
 # run
 print("Total IDs: {}".format(len(ids)))
 print(f'Parallelism on {cpu_count()} CPU')
-with Pool(cpu_count()) as p:
-    predictions = list(p.starmap(run_prophet, ids))
+if MODEL == 'Prophet':
+    with Pool(cpu_count()) as p:
+        predictions = list(p.starmap(run_prophet, ids))
+elif MODEL == 'ARIMA':
+    with Pool(cpu_count()) as p:
+        predictions = list(p.starmap(run_arima, ids))
+elif MODEL == 'SktimeEnsemble':
+    with Pool(cpu_count()) as p:
+        predictions = list(p.starmap(run_sktimes, ids))
 
 ###
 # submit or check model performance
 ###
+
 def dept_store_sub_format(predictions3):
     df_prophet_forecast_3 = pd.DataFrame()
     for k in range(0, len(predictions3)):
@@ -162,8 +314,6 @@ def dept_store_sub_format(predictions3):
     return df_prophet_forecast_3
 
 def make_submission(df_prophet_forecast_3):
-    df_prophet_forecast_3.columns = df_sample.columns
-
     df_sub_eval = df_prophet_forecast_3.copy()
     df_sub_eval['id'] = df_sub_eval['id'].str.replace("validation", "evaluation")
 
@@ -177,8 +327,21 @@ def make_submission(df_prophet_forecast_3):
 
 # make a submit file
 df_prophet_forecast = dept_store_sub_format(predictions)
+print(df_prophet_forecast.shape)
+
+cols = [f'F{i}' for i in range(1, 29)]
+for i in df_prophet_forecast_1['id'].values.tolist():
+    df_prophet_forecast.loc[df_prophet_forecast['id'] == i, cols] = df_prophet_forecast_1.loc[df_prophet_forecast_1['id'] == i, cols].values
+assert np.sum(df_prophet_forecast.isna().sum()) == 0
+
 df_sub = make_submission(df_prophet_forecast)
 
+# non-negative
+v = df_sub[cols].values
+v[v < 0] = 0
+df_sub[cols] = v
+
+# submit
 df_sub.to_csv(OUTPUT_DIR + f'submission_{MODEL}.csv', index=False)
 print('Submission file saved!')
 

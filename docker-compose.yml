@@ -12,4 +12,5 @@ services:
     env_file: .env
     ports:
       - 8888:8888
-    command: jupyter notebook --ip=0.0.0.0 --allow-root --no-browser
+    command: /bin/bash
+    # command: jupyter notebook --ip=0.0.0.0 --allow-root --no-browser
