@@ -60,3 +60,5 @@ docker exec -it katsu-m5-conda bash
 (base) root@0f8f3ab4a6a1:/analysis# cd script
 (base) root@0f8f3ab4a6a1:/analysis/script# python run_accuracy.py 'SktimeEnsemble' 'sub'
 ```
+
+Note that the M5 data need to be in the 'input' folder.
